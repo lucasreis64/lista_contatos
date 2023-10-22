@@ -1,94 +1,88 @@
 import 'package:flutter/material.dart';
-import 'package:firebase_core/firebase_core.dart';
-import 'package:firebase_database/firebase_database.dart';
-import 'package:firebase_storage/firebase_storage.dart';
-import 'package:image_picker/image_picker.dart';
-import 'dart:io';
+import 'package:dotenv/dotenv.dart' show load, env;
+import 'package:parse_server_sdk/parse_server_sdk.dart';
 
 void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp();
-  runApp(PersonApp());
+  await load(); // Carrega as variáveis de ambiente do arquivo .env
+
+  runApp(ContactApp());
 }
 
-class PersonApp extends StatelessWidget {
+class ContactApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Cadastro de Pessoas',
-      home: HomeScreen(),
+      home: ContactScreen(),
     );
   }
 }
 
-class HomeScreen extends StatefulWidget {
+class ContactScreen extends StatefulWidget {
   @override
-  _HomeScreenState createState() => _HomeScreenState();
+  _ContactScreenState createState() => _ContactScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
-  final TextEditingController nameController = TextEditingController();
-  DatabaseReference databaseReference;
-  List<Person> people = [];
+class _ContactScreenState extends State<ContactScreen> {
+  List<Contact> contacts = [];
+  TextEditingController nameController = TextEditingController();
+  TextEditingController phoneController = TextEditingController();
   File imageFile;
 
   @override
   void initState() {
     super.initState();
-    databaseReference = FirebaseDatabase.instance.reference().child("people");
-    fetchPeople();
+    initializeParse();
+    fetchContacts();
   }
 
-  void fetchPeople() {
-    databaseReference.once().then((DataSnapshot snapshot) {
-      Map<dynamic, dynamic> values = snapshot.value;
-      people.clear();
-      if (values != null) {
-        values.forEach((key, values) {
-          people.add(Person.fromMap(values));
-        });
-      }
-      setState(() {});
-    });
+  void initializeParse() async {
+    final parseAppId = env['PARSE_APP_ID'];
+    final parseServerUrl = env['PARSE_SERVER_URL'];
+    final parseClientKey = env['PARSE_CLIENT_KEY'];
+
+    await Parse().initialize(
+      parseAppId,
+      parseServerUrl,
+      clientKey: parseClientKey,
+      debug: true,
+    );
   }
 
-  Future<void> uploadImage() async {
-    final picker = ImagePicker();
-    final pickedFile = await picker.getImage(source: ImageSource.gallery);
-
-    if (pickedFile != null) {
+  void fetchContacts() async {
+    final queryBuilder = QueryBuilder<Contact>(Contact())
+      ..orderByAscending('createdAt');
+    final response = await queryBuilder.query();
+    if (response.success && response.results != null) {
       setState(() {
-        imageFile = File(pickedFile.path);
+        contacts = response.results;
       });
     }
   }
 
-  void savePerson() async {
+  Future<void> saveContact() async {
     final name = nameController.text;
+    final phone = phoneController.text;
 
-    if (name.isNotEmpty && imageFile != null) {
-      final ref = FirebaseStorage.instance.ref().child(name);
-      await ref.putFile(imageFile);
+    if (name.isNotEmpty && phone.isNotEmpty) {
+      final contact = Contact(name, phone, imageFile);
 
-      final imageUrl = await ref.getDownloadURL();
-
-      final person = Person(name, imageUrl);
-      final id = databaseReference.push().key;
-
-      databaseReference.child(id).set(person.toMap());
-      nameController.clear();
-      setState(() {
+      final response = await contact.save();
+      if (response.success) {
+        fetchContacts();
+        nameController.clear();
+        phoneController.clear();
         imageFile = null;
-      });
-      fetchPeople();
+      }
     }
   }
+
+  // Implemente a função pickImage() para selecionar imagens
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('Cadastro de Pessoas'),
+        title: Text('Agenda de Contatos'),
       ),
       body: Padding(
         padding: EdgeInsets.all(16.0),
@@ -98,8 +92,12 @@ class _HomeScreenState extends State<HomeScreen> {
               controller: nameController,
               decoration: InputDecoration(labelText: 'Nome'),
             ),
+            TextField(
+              controller: phoneController,
+              decoration: InputDecoration(labelText: 'Telefone'),
+            ),
             ElevatedButton(
-              onPressed: uploadImage,
+              onPressed: () => pickImage(),
               child: Text('Selecionar Imagem'),
             ),
             if (imageFile != null) ...[
@@ -111,18 +109,19 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ],
             ElevatedButton(
-              onPressed: savePerson,
-              child: Text('Salvar Pessoa'),
+              onPressed: saveContact,
+              child: Text('Salvar Contato'),
             ),
             SizedBox(height: 16),
-            Text('Pessoas Cadastradas:'),
+            Text('Contatos Cadastrados:'),
             Expanded(
               child: ListView.builder(
-                itemCount: people.length,
+                itemCount: contacts.length,
                 itemBuilder: (context, index) {
                   return ListTile(
-                    leading: Image.network(people[index].imageUrl),
-                    title: Text(people[index].name),
+                    leading: Image.network(contacts[index].imageUrl),
+                    title: Text(contacts[index].name),
+                    subtitle: Text(contacts[index].phone),
                   );
                 },
               ),
@@ -132,22 +131,23 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
   }
+
+  Future<void> pickImage() async {
+    // Implemente a lógica de seleção de imagens
+  }
 }
 
-class Person {
-  final String name;
-  final String imageUrl;
-
-  Person(this.name, this.imageUrl);
-
-  factory Person.fromMap(Map<dynamic, dynamic> map) {
-    return Person(map['name'], map['imageUrl']);
+class Contact extends ParseObject {
+  Contact(String name, String phone, File image) : super('Contact') {
+    set<String>('name', name);
+    set<String>('phone', phone);
+    if (image != null) {
+      final parseFile = ParseFile(image);
+      set<ParseFile>('image', parseFile);
+    }
   }
 
-  Map<String, dynamic> toMap() {
-    return {
-      'name': name,
-      'imageUrl': imageUrl,
-    };
-  }
+  String get name => get<String>('name');
+  String get phone => get<String>('phone');
+  String get imageUrl => get<ParseFile>('image')?.url;
 }
